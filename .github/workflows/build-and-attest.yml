@@ -2,50 +2,98 @@
 #
 # Builds every release artifact, records GitHub build provenance for them,
 # and publishes them to a GitHub Release.
-#
-# Artifact names match what the attestation manifest uses, so the published
-# SHA256SUMS can be compared line for line against the attestations in
-# contrib/sigs/. The triples below must therefore stay in step with
-# lib/attestation.nix, which derives them from the Rust target of each build.
 
 name: Build and Attest
 
 on:
   push:
     tags: ["v*"]
+  schedule:
+    # Nightly master build; skipped when the floresta-master pin is unchanged.
+    - cron: "0 3 * * *"
   workflow_dispatch:
+    inputs:
+      attr:
+        description: "Flake attribute to build: master or a pinned version (e.g. v0_9_1)"
+        required: false
+        default: master
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.plan.outputs.proceed }}
+      publish: ${{ steps.plan.outputs.publish }}
+      rev: ${{ steps.plan.outputs.rev }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Decide what to build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_ATTR: ${{ inputs.attr }}
+        run: |
+          set -euo pipefail
+
+          # A tag names its flake attribute, with dots as underscores:
+          # v0.9.1 builds .#v0_9_1. A tag without a matching attribute
+          # fails at nix build, which is the error message we want.
+          case "$EVENT" in
+            push)              base="${REF_NAME//./_}"; publish=release ;;
+            schedule)          base=master;             publish=nightly ;;
+            workflow_dispatch) base="${DISPATCH_ATTR:-master}"
+                               if [ "$base" = master ]; then publish=nightly; else publish=none; fi ;;
+          esac
+
+          # Nightlies build the committed floresta-master pin; a scheduled
+          # run on an unchanged pin would republish identical artifacts.
+          # The last published pin is read back off the nightly release body.
+          rev=$(jq -r '.nodes."floresta-master".locked.rev' flake.lock)
+          proceed=true
+          if [ "$EVENT" = schedule ]; then
+            last=$(gh release view nightly --repo "$GITHUB_REPOSITORY" \
+              --json body --jq .body 2>/dev/null \
+              | sed -n 's/.*floresta-master: \([0-9a-f]\{40\}\).*/\1/p' || true)
+            if [ "$rev" = "$last" ]; then
+              proceed=false
+              echo "floresta-master pin unchanged ($rev), nothing to publish"
+            fi
+          fi
+
+          # Android cross builds exist only on master.
+          matrix=$(jq -cn --arg base "$base" '
+            [ {runner: "ubuntu-latest",    attr: $base, triple: "x86_64-unknown-linux-gnu"},
+              {runner: "ubuntu-24.04-arm", attr: $base, triple: "aarch64-unknown-linux-gnu"},
+              {runner: "macos-14",         attr: $base, triple: "aarch64-apple-darwin"} ]
+            + (if $base == "master" then
+              [ {runner: "ubuntu-latest", attr: ($base + ".aarch64-android"), triple: "aarch64-linux-android"},
+                {runner: "ubuntu-latest", attr: ($base + ".armv7a-android"),  triple: "armv7-linux-androideabi"},
+                {runner: "ubuntu-latest", attr: ($base + ".x86_64-android"),  triple: "x86_64-linux-android"} ]
+              else [] end)')
+
+          {
+            echo "proceed=$proceed"
+            echo "publish=$publish"
+            echo "rev=$rev"
+            echo "matrix=$matrix"
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.triple }}
+    needs: plan
+    if: needs.plan.outputs.proceed == 'true'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # ── Native ───────────────────────────────────────────────
-          - runner: ubuntu-latest
-            attr: master
-            triple: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            attr: master
-            triple: aarch64-unknown-linux-gnu
-          - runner: macos-14
-            attr: master
-            triple: aarch64-apple-darwin
-
-          # ── Android cross (x86_64-linux host) ────────────────────
-          - runner: ubuntu-latest
-            attr: master.aarch64-android
-            triple: aarch64-linux-android
-          - runner: ubuntu-latest
-            attr: master.armv7a-android
-            triple: armv7-linux-androideabi
-          - runner: ubuntu-latest
-            attr: master.x86_64-android
-            triple: x86_64-linux-android
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -99,11 +147,12 @@ jobs:
           name: floresta-${{ matrix.triple }}
           path: results/*
           if-no-files-found: error
+          retention-days: 3
 
   attest-and-release:
     name: Attest and Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    if: needs.plan.outputs.publish == 'release'
+    needs: [plan, build]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -135,4 +184,50 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: results/*
+
+  nightly:
+    name: Publish Nightly
+    if: needs.plan.outputs.publish == 'nightly'
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: results
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd results
+          sha256sum -- * | LC_ALL=C sort -k2 > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            results/*
+            !results/SHA256SUMS
+
+      # Same asset names every night, so re-uploading replaces last
+      # night's copies. The body records the pin the plan job checks.
+      - name: Update nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly (master)
+          prerelease: true
+          body: |
+            Rolling build of the `master` flake attribute. Not attested by
+            independent builders — broader purposes, not for verification.
+
+            floresta-master: ${{ needs.plan.outputs.rev }}
           files: results/*

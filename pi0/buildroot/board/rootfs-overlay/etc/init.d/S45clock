@@ -1,0 +1,28 @@
+#!/bin/sh
+# NTP sync.  Boot-critical for a Bitcoin node: no RTC on this board,
+# and median-time-past checks reject blocks when the clock says 1970.
+# S05 already restored the last persisted timestamp as a stopgap; here
+# we try for the real time as soon as the USB network exists, without
+# blocking boot forever when the host has no NAT set up.
+. /usr/lib/florestaos/common.sh
+
+case "$1" in
+stop)
+	persist_clock
+	;;
+*)
+	load_config 2>/dev/null || exit 0
+
+	# One bounded synchronous attempt so the bench modes start with a
+	# correct clock when the network is there...
+	if timeout 30 ntpd -n -q -p "$CFG_NTP_SERVER" 2>/dev/null; then
+		log "clock synced via NTP ($CFG_NTP_SERVER)"
+		persist_clock
+	else
+		log "WARNING: NTP sync failed (no NAT on the host yet?); running on the persisted clock"
+	fi
+	# ...and a background daemon that keeps it synced (and catches the
+	# case where the host's NAT shows up minutes after boot).
+	ntpd -p "$CFG_NTP_SERVER"
+	;;
+esac

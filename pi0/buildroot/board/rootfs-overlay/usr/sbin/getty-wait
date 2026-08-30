@@ -1,0 +1,10 @@
+#!/bin/sh
+# Respawn target for a getty on a device that appears late (the USB
+# gadget serial port only exists once S30usbgadget has bound the UDC).
+# A plain getty in inittab would crash-loop until init disables the
+# line "for 5 minutes"; waiting here keeps the respawn well-behaved.
+dev="$1"
+while [ ! -c "/dev/$dev" ]; do
+	sleep 2
+done
+exec /sbin/getty -L "$dev" 115200 vt100

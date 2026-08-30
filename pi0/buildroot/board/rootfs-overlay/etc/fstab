@@ -1,0 +1,8 @@
+# /proc, /sys, /dev, /run: mounted by /sbin/preinit.
+# /data (f2fs): mounted by S05florestaboot once it has guaranteed the
+#               partition exists — first boot creates it.
+#
+# `flush` on the FAT: the results mailbox is yanked out of powered-off
+# boards and read on other machines; eager flushing keeps it sane.
+/dev/mmcblk0p1	/boot	vfat	noatime,flush	0	0
+tmpfs		/tmp	tmpfs	mode=1777,nosuid,nodev	0	0

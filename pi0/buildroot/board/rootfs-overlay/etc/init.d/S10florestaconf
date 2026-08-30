@@ -1,0 +1,34 @@
+#!/bin/sh
+# Echo the effective configuration into the results mailbox.  This is
+# the auditable record of what a bench run actually ran with — the
+# user's edited file may have had typos that fell back to defaults,
+# and the warnings say so.
+. /usr/lib/florestaos/common.sh
+
+case "$1" in
+stop) ;;
+*)
+	load_config 2>/dev/null || exit 0
+	stamp="$(boot_stamp)"
+	bootlog="$RUN_DIR/boot-$stamp.log"
+
+	{
+		echo "florestaos boot $stamp"
+		echo "kernel: $(uname -rm)"
+		echo "model: $(tr -d '\0' </proc/device-tree/model 2>/dev/null)"
+		echo "mem: $(grep MemTotal /proc/meminfo)"
+		echo "florestad: $(florestad --version 2>/dev/null | head -n 1)"
+		echo
+		echo "--- effective configuration"
+		grep '^CFG_' "$EFFECTIVE_CONF"
+		if [ -s "$WARNINGS_FILE" ]; then
+			echo
+			echo "--- configuration warnings"
+			cat "$WARNINGS_FILE"
+		fi
+	} >"$bootlog"
+
+	sync_to_results "$bootlog" ||
+		log "WARNING: could not write boot log to $RESULTS_DIR"
+	;;
+esac

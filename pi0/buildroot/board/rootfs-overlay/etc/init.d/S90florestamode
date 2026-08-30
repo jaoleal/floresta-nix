@@ -1,0 +1,55 @@
+#!/bin/sh
+# Mode dispatcher — the last init step: by now storage, config, USB
+# network, clock and sshd are all up.  Decides what this boot *is*
+# based on mode= in /boot/florestaos.conf.
+. /usr/lib/florestaos/common.sh
+
+start_node() {
+	set -- --network "$CFG_NETWORK" --data-dir /data/floresta \
+		--rpc-address 127.0.0.1:8332 --log-to-file
+	[ "$CFG_ASSUME_UTREEXO" = false ] && set -- "$@" --no-assume-utreexo
+	[ "$CFG_ASSUME_VALID" != hardcoded ] && set -- "$@" --assume-valid "$CFG_ASSUME_VALID"
+	# shellcheck disable=SC2086
+	set -- "$@" $CFG_EXTRA_FLAGS
+
+	log "node mode: florestad $*"
+	florestad "$@" >>/data/floresta/console.log 2>&1 &
+	echo $! >"$RUN_DIR/florestad.pid"
+}
+
+case "$1" in
+stop)
+	# Clean shutdown path (rcK): stop florestad first so it flushes
+	# its chainstate, then let the sampler take its final row to the
+	# FAT.  Power-loss tolerance is the design, but a clean poweroff
+	# should never have to rely on it.
+	pid=$(cat "$RUN_DIR/florestad.pid" 2>/dev/null || pidof florestad)
+	if [ -n "$pid" ]; then
+		kill -TERM $pid 2>/dev/null
+		timeout 120 sh -c "while kill -0 $pid 2>/dev/null; do sleep 1; done"
+	fi
+	[ -f "$RUN_DIR/sampler.pid" ] && kill -TERM "$(cat "$RUN_DIR/sampler.pid")" 2>/dev/null
+	sleep 2
+	persist_clock
+	sync
+	;;
+*)
+	load_config 2>/dev/null || exit 0
+
+	case "$CFG_MODE" in
+	node)
+		[ -d /data/floresta ] || {
+			log "ERROR: /data unavailable, not starting florestad"
+			exit 0
+		}
+		start_node
+		;;
+	bench-micro)
+		bench-micro &
+		;;
+	bench-ibd | bench-assume)
+		floresta-bench-run &
+		;;
+	esac
+	;;
+esac

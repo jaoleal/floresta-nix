@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Micro-benchmarks for the Pi Zero bench lab.
+#
+# The dependencies are deliberately the same crates Floresta uses on its
+# hot path (bitcoin_hashes for SHA256, secp256k1 for signature checks,
+# rustreexo for accumulator proofs), so the numbers measured here are the
+# numbers that actually bound IBD on this hardware — not a synthetic
+# stand-in.  rustreexo is pinned to the exact version Floresta pins.
+[package]
+name = "pi0-bench"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bitcoin_hashes = "0.14"
+secp256k1 = "0.29"
+rustreexo = "=0.6.0"
+
+# Same rationale as shipping a release florestad: we are benchmarking the
+# code, not the compiler's debug mode.
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

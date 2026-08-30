@@ -90,6 +90,25 @@
               ;
           };
 
+          # Raspberry Pi Zero bench lab: Buildroot-built SD image with
+          # Nix-cross-compiled florestad.  x86_64-linux only — Buildroot
+          # needs a Linux build host.  See pi0/README.md.
+          pi0 = lib.optionalAttrs (system == "x86_64-linux") (
+            import ./pi0/nix {
+              inherit
+                pkgs
+                inputs
+                system
+                masterSrc
+                ;
+            }
+          );
+
+          # Host-side automated flasher (rpiboot USB boot): all systems —
+          # the user's host may well be a Mac even though the image build
+          # is Linux-only.
+          flashPi0 = import ./pi0/nix/flash.nix { inherit pkgs; };
+
           # Release attestation — see lib/attestation.nix.
           attestation = import ./lib/attestation.nix {
             inherit pkgs;
@@ -113,6 +132,10 @@
                   ./lib/floresta-service.nix
                   ./lib/floresta-service-eval-test.nix
                   ./lib/floresta-service-vm-test.nix
+                  ./pi0/nix/default.nix
+                  ./pi0/nix/flash.nix
+                  ./pi0/nix/rust-armv6.nix
+                  ./pi0/nix/sd-image.nix
                   ./flake.nix
                   ./flake.lock
                 ];
@@ -146,27 +169,36 @@
             # attestation-manifest-<version>: the SHA256SUMS of one release.
             // lib.mapAttrs' (
               version: lib.nameValuePair "attestation-manifest-${version}"
-            ) attestation.manifests;
+            ) attestation.manifests
+            # pi0-sd-image and friends, where they exist (x86_64-linux).
+            // (pi0.packages or { })
+            // {
+              flash-pi0 = flashPi0;
+            };
 
-          # The attestation verbs.
+          # The attestation verbs, and the pi0 flasher.
           apps = {
             verify.program = attestation.verify;
             attest.program = attestation.attest;
             releases.program = attestation.listReleases;
+            flash-pi0.program = flashPi0;
           };
 
           formatter = pkgs.nixfmt-classic;
 
-          devShells.default = pkgs.mkShell {
-            inherit (self'.checks.nix-sanity-check) shellHook;
-            packages = with pkgs; [
-              nil
-              nixfmt
-              just
-              nix-output-monitor
-              cachix
-            ];
-          };
+          devShells = {
+            default = pkgs.mkShell {
+              inherit (self'.checks.nix-sanity-check) shellHook;
+              packages = with pkgs; [
+                nil
+                nixfmt
+                just
+                nix-output-monitor
+                cachix
+              ];
+            };
+          }
+          // lib.optionalAttrs (pi0 ? devShell) { pi0 = pi0.devShell; };
         };
     };
 

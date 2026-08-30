@@ -1,0 +1,8 @@
+# This BR2_EXTERNAL tree defines no extra Kconfig options.
+#
+# It carries only board files and a rootfs overlay: the Rust binaries
+# (florestad, floresta-cli, pi0-bench) are cross-compiled by Nix — see
+# pi0/nix/rust-armv6.nix — and injected into the image through a second
+# rootfs overlay directory, so Buildroot never needs a Rust toolchain.
+# That keeps the Buildroot side small and lets the Nix side reuse the
+# same floresta-build.nix machinery the Android targets use.

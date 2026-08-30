@@ -1,0 +1,1 @@
+root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait init=/sbin/preinit console=tty1 console=ttyAMA0,115200

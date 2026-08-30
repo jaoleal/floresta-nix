@@ -16,13 +16,19 @@
 #    evolve separately.
 #  * The C/C++ toolchain is pkgsCross.muslpi (nixpkgs' name for
 #    exactly this armv6l musl hard-float triple) — it compiles the C
-#    parts (secp256k1, zstd, aws-lc, and Bitcoin Core's
-#    libbitcoinkernel via the cmake crate) and does the final link.
+#    parts and does the final link.  In the pinned tree the C/C++ in
+#    the default florestad build is: secp256k1-sys, ring (rustls'
+#    crypto provider), aws-lc-sys (pulled in by rcgen only — rustls
+#    itself is on ring) — all built through the cc crate, which picks
+#    the cross compiler from CC_<target> below — plus Bitcoin Core's
+#    libbitcoinkernel (libbitcoinkernel-sys 0.4.0, crates.io, no
+#    bindgen), whose build.rs only knows how to cross-compile for
+#    Android; the CMAKE_TOOLCHAIN_FILE below covers this target.
 {
   pkgs,
   inputs,
   system,
-  masterSrc,
+  florestaSrc,
 }:
 
 let
@@ -53,31 +59,43 @@ let
     rustc = rustToolchain;
   };
 
+  # libbitcoinkernel-sys (0.4.0 as of the current pin) shells out to
+  # `cmake` and only configures a cross toolchain for Android targets
+  # — any other cross target compiles Bitcoin Core with the HOST
+  # compiler and poisons the final link with x86_64 objects ("file
+  # format not recognized").  CMake >= 3.21 honors
+  # $CMAKE_TOOLCHAIN_FILE on every configure, so this small file fixes
+  # the crate from the outside, no patching.  Once build.rs grows a
+  # generic-cross branch upstream, this file can go.
+  cmakeToolchain = pkgs.writeText "armv6-musl-toolchain.cmake" ''
+    set(CMAKE_SYSTEM_NAME Linux)
+    set(CMAKE_SYSTEM_PROCESSOR arm)
+    set(CMAKE_C_COMPILER ${ccBin}cc)
+    set(CMAKE_CXX_COMPILER ${ccBin}c++)
+  '';
+
   crossEnv = {
     CARGO_BUILD_TARGET = rustTarget;
+    CMAKE_TOOLCHAIN_FILE = cmakeToolchain;
     "CARGO_TARGET_${targetEnvSuffix}_LINKER" = "${ccBin}cc";
     # Fully static: the binary must run on the Buildroot rootfs (and
     # anywhere else) without carrying a libc contract with it.
     "CARGO_TARGET_${targetEnvSuffix}_RUSTFLAGS" = "-C target-feature=+crt-static";
-    # The cc/cmake crates (secp256k1-sys, zstd-sys, aws-lc-sys,
-    # libbitcoinkernel-sys) pick the target compiler from these.
+    # The cc crate (secp256k1-sys, ring, aws-lc-sys,
+    # libbitcoinkernel-sys 0.3.0) picks the target compiler from these.
     "CC_${targetUnderscore}" = "${ccBin}cc";
     "CXX_${targetUnderscore}" = "${ccBin}c++";
     "AR_${targetUnderscore}" = "${ccBin}ar";
-    # If aws-lc-sys has no pregenerated bindings for this triple it
-    # falls back to bindgen, which needs to find musl's headers.
-    "BINDGEN_EXTRA_CLANG_ARGS_${targetUnderscore}" = "--target=${rustTarget} -isystem ${
-      crossCc.libc.dev or crossCc.libc
-    }/include";
   };
 
-  # florestad + floresta-cli, from the same pinned source (and with
-  # the same patched libbitcoinkernel-sys) the Android builds use.
+  # florestad + floresta-cli from the pinned upstream master (see
+  # default.nix) — deliberately NOT the Android fork: upstream now
+  # consumes bitcoinkernel from crates.io, bindgen-free.
   floresta =
     (import ../../lib/floresta-build.nix {
       inherit pkgs;
       inherit (pkgs) lib;
-      defaultSrc = masterSrc;
+      defaultSrc = florestaSrc;
       rustPlatform = armRustPlatform;
       pnameSuffix = "-armv6-musl";
 

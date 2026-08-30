@@ -50,6 +50,29 @@ CONFIG_USB_CONFIGFS_ACM=y
 CONFIG_USB_CONFIGFS_ECM=y
 CONFIG_USB_CONFIGFS_RNDIS=y
 
+# Legacy (pre-configfs) gadget drivers must be OFF, explicitly: bcmrpi
+# has them =m, and with CONFIG_MODULES=n the kconfig resolver promotes
+# leftover =m to =y — a built-in legacy gadget (g_zero was the winner)
+# then claims the UDC at boot, before our configfs composite can, and
+# the board enumerates as a test device instead of a network card.
+# CONFIG_USB_ZERO is not set
+# CONFIG_USB_AUDIO is not set
+# CONFIG_USB_ETH is not set
+# CONFIG_USB_G_NCM is not set
+# CONFIG_USB_GADGETFS is not set
+# CONFIG_USB_FUNCTIONFS is not set
+# CONFIG_USB_MASS_STORAGE is not set
+# CONFIG_USB_G_SERIAL is not set
+# CONFIG_USB_MIDI_GADGET is not set
+# CONFIG_USB_G_PRINTER is not set
+# CONFIG_USB_CDC_COMPOSITE is not set
+# CONFIG_USB_G_ACM_MS is not set
+# CONFIG_USB_G_MULTI is not set
+# CONFIG_USB_G_HID is not set
+# CONFIG_USB_G_DBGP is not set
+# CONFIG_USB_G_WEBCAM is not set
+# CONFIG_USB_RAW_GADGET is not set
+
 # florestad may open v6 sockets; bcmrpi has IPv6 as a module, which
 # CONFIG_MODULES=n would silently drop — force it in.
 CONFIG_IPV6=y

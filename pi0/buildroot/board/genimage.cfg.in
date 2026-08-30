@@ -1,6 +1,8 @@
 # genimage template for the Floresta Pi Zero SD image.
-# #BOOT_FILES# is filled in by post-image.sh with everything the
-# firmware and the lab need on the FAT partition.
+# post-image.sh fills the files list below (the BOOT_FILES
+# placeholder) with everything the firmware and the lab need on the
+# FAT partition.  Do not write the literal placeholder token in these
+# comments: sed substitutes it on ANY line it appears.
 #
 # Only two partitions are in the flashed image:
 #   p1  FAT32 128M  /boot — firmware, kernel, florestaos.conf, results/

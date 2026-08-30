@@ -9,16 +9,24 @@
   pkgs,
   inputs,
   system,
-  masterSrc,
 }:
 
 let
+  # The Floresta tree the lab runs: the flake's `floresta-master`
+  # input — currently the bump/kernel0-3 branch proposed upstream,
+  # which moves to crates.io bitcoinkernel 0.3.0 (libbitcoinkernel-sys
+  # 0.4.0: bindgen-free, Android-aware build.rs).  Generic non-Android
+  # cross is still not handled by that build.rs, so rust-armv6.nix
+  # keeps compensating with a CMAKE_TOOLCHAIN_FILE.
+  # Update with: nix flake update floresta-master
+  florestaSrc = inputs.floresta-master;
+
   rust = import ./rust-armv6.nix {
     inherit
       pkgs
       inputs
       system
-      masterSrc
+      florestaSrc
       ;
   };
 
@@ -29,6 +37,16 @@ let
   };
 in
 {
+  checks = {
+    # `nix build .#checks.x86_64-linux.pi0-boot-test` = build the
+    # image AND boot-validate it under QEMU in one command.  Runs
+    # before any hardware flashing — see pi0/README.md.
+    pi0-boot-test = import ./qemu-boot-test.nix {
+      inherit pkgs;
+      inherit (sdImage) image;
+    };
+  };
+
   packages = {
     pi0-sd-image = sdImage.image;
     # Exposed on their own so the expensive pieces can be built (and

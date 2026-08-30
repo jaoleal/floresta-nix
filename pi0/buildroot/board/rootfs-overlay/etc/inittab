@@ -9,10 +9,12 @@
 # Consoles: hardware UART (always), HDMI (if anything is plugged in),
 # and the USB gadget serial port.  ttyGS0 only exists after
 # S30usbgadget builds the composite gadget, so a wrapper waits for the
-# device instead of letting init throttle a crash-looping getty.
+# device — and its inittab id field MUST stay empty: init opens the id
+# device itself before spawning, so a ttyGS0 id makes init error-spam
+# "can't open /dev/ttyGS0" without ever running the wrapper.
 ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
 tty1::respawn:/sbin/getty -L tty1 0 vt100
-ttyGS0::respawn:/usr/sbin/getty-wait ttyGS0
+::respawn:/usr/sbin/getty-wait ttyGS0
 
 ::ctrlaltdel:/sbin/reboot
 

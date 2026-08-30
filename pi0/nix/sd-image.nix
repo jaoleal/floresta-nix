@@ -30,7 +30,7 @@
   # bump on defconfig changes.  (The derivation name carries a
   # fingerprint of the defconfig to turn that mistake into a loud
   # hash-mismatch error instead.)
-  dlHash ? pkgs.lib.fakeHash,
+  dlHash ? "sha256-5Zj5FNzVL7zBJxA8KIjI6K1GSW10nA6yN0kSH3vtYko=",
 }:
 
 let
@@ -68,6 +68,10 @@ let
     file
     flex
     gawk
+    # Not required by a pristine tree, but cheap insurance: if
+    # anything ever bumps a script's mtime, autotools reaches for
+    # help2man to regenerate man pages instead of failing the build.
+    help2man
     ncurses
     perl
     python3
@@ -79,19 +83,122 @@ let
     which
   ];
 
+  # Buildroot's fix-rpath (host-finalize) requires a patchelf that
+  # carries Buildroot's own out-of-tree `--make-rpath-relative`
+  # option, and the host-patchelf it builds for itself refuses to run
+  # inside the Nix sandbox.  fix-rpath offers a $PATCHELF override, so
+  # build the very same patched patchelf as a Nix derivation — always
+  # executable, and outside HOST_DIR so fix-rpath never mutates it.
+  brPatchelfPatch = pkgs.runCommand "buildroot-patchelf-rpath-relative.patch" { } ''
+    tar xf ${buildrootSrc} -O \
+      buildroot-${buildrootVersion}/package/patchelf/0001-Add-option-to-make-the-rpath-relative-under-a-specif.patch \
+      > $out
+  '';
+  brPatchelf = pkgs.stdenv.mkDerivation {
+    pname = "buildroot-patchelf";
+    version = "0.13";
+    # Same tarball + hash Buildroot pins in package/patchelf/.
+    src = pkgs.fetchurl {
+      url = "https://github.com/NixOS/patchelf/releases/download/0.13/patchelf-0.13.tar.bz2";
+      hash = "sha256-TH7UvPwaEU1ihuSg08GpDbFHpMOt2hgU7g7uD57pF+0=";
+    };
+    patches = [ brPatchelfPatch ];
+  };
+
+  # Buildroot instrumentation hook (called as: <start|end> <step>
+  # <package> with $BUILD_DIR exported): after each package's patch
+  # step, rewrite absolute shebangs that do not exist inside the Nix
+  # sandbox (only /bin/sh does) to their store equivalents — e.g.
+  # OpenSSL's Configure starts with `#!/usr/bin/env perl`.  Scope is
+  # deliberately narrow: executable files only (non-executable scripts
+  # are run through an explicit interpreter and never consult their
+  # shebang), and nothing that lands on the target rootfs — no package
+  # in this config installs env-shebang scripts to the target, and the
+  # florestaos overlay is all #!/bin/sh.
+  shebangHook = pkgs.writeShellScript "br-sandbox-shebang-hook" ''
+    [ "$1" = end ] || exit 0
+    [ "$2" = patch ] || exit 0
+    ref=$(mktemp)
+    for d in "$BUILD_DIR/$3"-*; do
+      [ -d "$d" ] || continue
+      find "$d" -type f -perm -100 -print0 2>/dev/null |
+        while IFS= read -r -d "" f; do
+          # Only rewrite files whose shebang actually offends — and
+          # keep their mtime: sed -i recreates the file, and a fresh
+          # timestamp makes autotools think shipped artifacts (man
+          # pages, parsers) are stale and regenerate them with tools
+          # we do not carry.
+          case "$(head -c 32 "$f" 2>/dev/null)" in
+          '#!/usr/bin/env'* | '#! /usr/bin/env'*) ;;
+          '#!/usr/bin/perl'* | '#! /usr/bin/perl'*) ;;
+          '#!/usr/bin/python3'* | '#! /usr/bin/python3'*) ;;
+          '#!/bin/bash'* | '#! /bin/bash'*) ;;
+          *) continue ;;
+          esac
+          touch -r "$f" "$ref"
+          sed -i \
+            -e '1s|^#! */usr/bin/env|#!${pkgs.coreutils}/bin/env|' \
+            -e '1s|^#! */usr/bin/perl|#!${pkgs.perl}/bin/perl|' \
+            -e '1s|^#! */usr/bin/python3|#!${pkgs.python3}/bin/python3|' \
+            -e '1s|^#! */bin/bash|#!${pkgs.bash}/bin/bash|' \
+            "$f"
+          touch -r "$ref" "$f"
+        done
+    done
+    rm -f "$ref"
+    exit 0
+  '';
+
   # Shared preamble: unpack Buildroot, defang the /usr/bin/file check
   # (the Nix sandbox has no /usr, `file` is in PATH), fix shebangs,
   # and load our defconfig from the external tree.
   prepare = ''
     export HOME="$TMPDIR"
     export BR2_JLEVEL="$NIX_BUILD_CORES"
+    # See shebangHook above; a no-op during `make source`.
+    export BR2_INSTRUMENTATION_SCRIPTS=${shebangHook}
+    # See brPatchelf above; consumed by support/scripts/fix-rpath.
+    export PATCHELF=${brPatchelf}/bin/patchelf
 
     tar xf ${buildrootSrc}
     cd buildroot-${buildrootVersion}
 
     substituteInPlace support/dependencies/dependencies.sh \
       --replace-fail 'check_prog_host "/usr/bin/file"' 'check_prog_host "file"'
-    patchShebangs --build .
+    # The sandbox provides /bin/sh and nothing else in /bin — Buildroot
+    # hardcodes /bin/true (autoreconf's AUTOPOINT, GTKDOCIZE, the
+    # no-strip case) and /bin/false (pkg-cmake's CXX-less guard).  The
+    # bare names resolve via PATH to coreutils.
+    sed -i 's|/bin/true|true|g; s|/bin/false|false|g' \
+      package/pkg-autotools.mk \
+      package/pkg-cmake.mk \
+      package/autoconf/autoconf.mk \
+      package/Makefile.in
+    # Rewrite ONLY the shebangs the sandbox cannot execute (it has
+    # /bin/sh and nothing else).  A blanket patchShebangs would — and
+    # once did — also rewrite the #!/bin/sh of scripts Buildroot
+    # installs INTO THE TARGET rootfs (initscripts' rcS, busybox's
+    # S01syslogd, dropbear's S50...) to build-machine store paths that
+    # do not exist on the Pi, silently bricking userspace init.
+    # #!/bin/sh scripts run fine in the sandbox untouched, and no
+    # target-installed script in this package set uses the four
+    # interpreters rewritten here.
+    find . -type f -perm -100 -print0 |
+      while IFS= read -r -d "" f; do
+        case "$(head -c 32 "$f" 2>/dev/null)" in
+        '#!/usr/bin/env'* | '#! /usr/bin/env'*) ;;
+        '#!/usr/bin/perl'* | '#! /usr/bin/perl'*) ;;
+        '#!/usr/bin/python3'* | '#! /usr/bin/python3'*) ;;
+        '#!/bin/bash'* | '#! /bin/bash'*) ;;
+        *) continue ;;
+        esac
+        sed -i \
+          -e '1s|^#! */usr/bin/env|#!${pkgs.coreutils}/bin/env|' \
+          -e '1s|^#! */usr/bin/perl|#!${pkgs.perl}/bin/perl|' \
+          -e '1s|^#! */usr/bin/python3|#!${pkgs.python3}/bin/python3|' \
+          -e '1s|^#! */bin/bash|#!${pkgs.bash}/bin/bash|' \
+          "$f"
+      done
 
     make BR2_EXTERNAL=${external} floresta_pi0_defconfig
   '';
@@ -154,7 +261,9 @@ let
       (cd "$out" && sha256sum floresta-pi0-sdcard.img > SHA256SUMS)
     '';
 
-    passthru = { inherit downloads rustOverlay; };
+    passthru = {
+      inherit downloads rustOverlay brPatchelf;
+    };
 
     meta = {
       description = "Flashable SD card image: Floresta bench lab for the Raspberry Pi Zero v1.3";

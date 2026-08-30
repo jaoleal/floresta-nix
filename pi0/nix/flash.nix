@@ -54,14 +54,22 @@ pkgs.writeShellApplication {
     fi
     if [ -z "$IMAGE" ]; then
       if [ -f flake.nix ] && grep -q "pi0-sd-image" flake.nix; then
-        say "no image found; building .#pi0-sd-image first (hours on a first build)"
-        nix build ".#pi0-sd-image" ||
-          die "image build failed.  Note: the image itself only builds on \
-    x86_64-linux — on macOS configure a Linux remote builder, or build it on a \
-    Linux box and pass the path: flash-pi0 /path/to/floresta-pi0-sdcard.img"
-        IMAGE=result/floresta-pi0-sdcard.img
+        # Ask nix for the store path directly — never trust ./result,
+        # which any later `nix build` of something else repoints.
+        # Instant when the image is already built; hours on a first
+        # build on x86_64-linux; fails fast anywhere else.
+        say "resolving the image via .#pi0-sd-image ..."
+        out="$(nix build ".#pi0-sd-image" --no-link --print-out-paths 2>/dev/null | tail -n 1)" || out=""
+        if [ -n "$out" ] && [ -f "$out/floresta-pi0-sdcard.img" ]; then
+          IMAGE="$out/floresta-pi0-sdcard.img"
+        else
+          die "could not obtain .#pi0-sd-image.  It only builds on \
+    x86_64-linux (and needs the dlHash TOFU step — see pi0/README.md); build \
+    it there, or pass an image explicitly: flash-pi0 <image.img>"
+        fi
       else
-        die "no image found.  Run from the floresta-nix repo, or: flash-pi0 <image.img>"
+        die "no image found and not inside the floresta-nix repo. \
+    Pass the image path: flash-pi0 <image.img>"
       fi
     fi
     [ -f "$IMAGE" ] || die "image '$IMAGE' does not exist"
@@ -72,6 +80,11 @@ pkgs.writeShellApplication {
     # so the backgrounded rpiboot never stalls on a password prompt.
     say "sudo is needed for rpiboot (USB access on Linux) and dd"
     sudo -v
+    # A long flash can outlive sudo's credential timestamp, and a sudo
+    # invoked mid-script may fail instead of re-prompting; keep the
+    # timestamp warm until we exit.
+    (while sudo -n true 2>/dev/null; do sleep 50; done) &
+    SUDO_KEEPALIVE_PID=$!
 
     # ------------------------------------------------------- disk listing
     list_disks() {
@@ -90,6 +103,9 @@ pkgs.writeShellApplication {
     cleanup() {
       if [ -n "''${RPIBOOT_PID:-}" ]; then
         kill "$RPIBOOT_PID" 2>/dev/null || true
+      fi
+      if [ -n "''${SUDO_KEEPALIVE_PID:-}" ]; then
+        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
       fi
       if [ -n "''${READBACK:-}" ]; then
         rm -f "$READBACK"
@@ -118,9 +134,9 @@ pkgs.writeShellApplication {
     echo
 
     # ------------------------------------------------------- wait for the disk
-    say "waiting for the Pi to enumerate as a disk (timeout 90s)..."
+    say "waiting for the Pi to enumerate as a disk (timeout 180s)..."
     disk=""
-    for ((try = 0; try < 45; try++)); do
+    for ((try = 0; try < 90; try++)); do
       sleep 2
       current="$(list_disks)"
       # New disks = in current, not in baseline.

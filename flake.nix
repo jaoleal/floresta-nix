@@ -94,14 +94,7 @@
           # Nix-cross-compiled florestad.  x86_64-linux only — Buildroot
           # needs a Linux build host.  See pi0/README.md.
           pi0 = lib.optionalAttrs (system == "x86_64-linux") (
-            import ./pi0/nix {
-              inherit
-                pkgs
-                inputs
-                system
-                masterSrc
-                ;
-            }
+            import ./pi0/nix { inherit pkgs inputs system; }
           );
 
           # Host-side automated flasher (rpiboot USB boot): all systems —
@@ -134,6 +127,7 @@
                   ./lib/floresta-service-vm-test.nix
                   ./pi0/nix/default.nix
                   ./pi0/nix/flash.nix
+                  ./pi0/nix/qemu-boot-test.nix
                   ./pi0/nix/rust-armv6.nix
                   ./pi0/nix/sd-image.nix
                   ./flake.nix
@@ -162,7 +156,10 @@
               inherit pkgs;
               flakeInputs = inputs;
             };
-          };
+          }
+          # pi0-boot-test: QEMU boot validation of the SD image
+          # (x86_64-linux, where the image exists).
+          // (pi0.checks or { });
 
           packages =
             releases
@@ -220,7 +217,7 @@
     # Used for default native builds and Android cross-compilation.
     # Update with: nix flake update floresta-master
     floresta-master = {
-      url = "github:jaoleal/FlorestaBA/android_patched_bitcoinkernel";
+      url = "github:jaoleal/FlorestaBA/bump/kernel0-3";
       flake = false;
     };
   };

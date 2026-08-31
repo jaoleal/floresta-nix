@@ -1,0 +1,72 @@
+#!/bin/sh
+# Offline microbenchmarks (mode bench-micro): no network needed.
+#
+# CPU rows come from the pi0-bench Rust binary — which uses the same
+# crates Floresta's hot path uses — and SD throughput rows are
+# measured here with dd against the f2fs data partition.  Everything
+# lands in one CSV with the same schema pi0-bench prints:
+#
+#     name,iters,total_ns,ns_per_op,ops_per_sec,extra
+. /usr/lib/florestaos/common.sh
+load_config
+
+stamp=$(boot_stamp)
+if [ -d /data/bench ]; then
+	CSV="/data/bench/bench-micro-$CFG_NETWORK-$stamp.csv"
+	SCRATCH=/data/bench/scratch.bin
+else
+	# Degraded (no /data): still produce results, straight on the FAT.
+	CSV="$RESULTS_DIR/bench-micro-$CFG_NETWORK-$stamp.csv"
+	SCRATCH=/tmp/scratch.bin
+fi
+
+echo "name,iters,total_ns,ns_per_op,ops_per_sec,extra" >"$CSV"
+
+log "bench-micro: CPU benchmarks (this takes a few minutes on an ARM11)"
+pi0-bench >>"$CSV"
+
+# now_cs: monotonic centiseconds from /proc/uptime — date(1) only has
+# whole seconds and the wall clock may step mid-bench (NTP).
+now_cs() {
+	awk '{gsub(/\./, "", $1); print $1}' /proc/uptime
+}
+
+# sd_bench <name> <bytes> <dd args...>
+sd_bench() {
+	name=$1
+	bytes=$2
+	shift 2
+	t0=$(now_cs)
+	dd "$@" 2>/dev/null
+	t1=$(now_cs)
+	dcs=$((t1 - t0))
+	[ "$dcs" -gt 0 ] || dcs=1
+	total_ns=$((dcs * 10000000))
+	mbps=$(awk -v b="$bytes" -v cs="$dcs" 'BEGIN {printf "%.2fMB/s", (b / 1048576) / (cs / 100)}')
+	echo "$name,1,$total_ns,$total_ns,0,$mbps" >>"$CSV"
+}
+
+log "bench-micro: SD card throughput"
+# Sequential write, fsync'd so the card cannot lie about completion.
+sd_bench sd_write_1m_64m $((64 * 1024 * 1024)) \
+	if=/dev/zero of="$SCRATCH" bs=1M count=64 conv=fsync
+# Drop the page cache or the "read" would be a RAM benchmark.
+echo 3 >/proc/sys/vm/drop_caches
+sd_bench sd_read_1m_64m $((64 * 1024 * 1024)) \
+	if="$SCRATCH" of=/dev/null bs=1M
+echo 3 >/proc/sys/vm/drop_caches
+# Small-block read: closer to chainstate access patterns than the
+# sequential number the card's marketing quotes.
+sd_bench sd_read_4k_16m $((16 * 1024 * 1024)) \
+	if="$SCRATCH" of=/dev/null bs=4k count=4096
+rm -f "$SCRATCH"
+
+sync_to_results "$CSV" && log "bench-micro: results in $RESULTS_DIR/$(basename "$CSV")"
+persist_clock
+
+if [ "$CFG_BENCH_END" = poweroff ]; then
+	log "bench-micro done; powering off"
+	poweroff
+else
+	log "bench-micro done; bench_end=idle, staying up"
+fi

@@ -1,0 +1,4 @@
+# Only loopback is managed the classic way; usb0 is configured by
+# S30usbgadget from florestaos.conf (the address is user-editable).
+auto lo
+iface lo inet loopback

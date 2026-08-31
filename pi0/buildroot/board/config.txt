@@ -1,0 +1,27 @@
+# Raspberry Pi firmware configuration — Floresta Pi Zero bench lab.
+#
+# The board is headless and talks to the world through one micro-USB
+# cable, so this file is about three things: give the ARM as much of
+# the 512 MB as the firmware allows, expose the USB controller as a
+# gadget, and keep a serial console for debugging.
+
+# Cut-down firmware + 16 MB of GPU memory: the legal minimum, enough
+# for the firmware to bring the chip up.  No display output is used.
+start_file=start_cd.elf
+fixup_file=fixup_cd.dat
+gpu_mem=16
+
+kernel=zImage
+
+# Route the SoC's USB controller (dwc2) to the gadget-capable driver.
+# dr_mode=peripheral: this Pi is always the device end of the cable —
+# the same cable that powers it.
+dtoverlay=dwc2,dr_mode=peripheral
+
+# PL011 UART on GPIO14/15: the fallback console when USB networking is
+# being debugged rather than used.
+enable_uart=1
+
+# Shave boot time; there is no display to splash on.
+disable_splash=1
+boot_delay=0

@@ -1,0 +1,95 @@
+#!/bin/sh
+# IBD benchmark runner (modes bench-ibd and bench-assume).
+#
+# Starts florestad from a *wiped* datadir — that is the point of the
+# benchmark, both modes measure a cold start — plus the sampler, then
+# watches for the two stop conditions (height reached, time budget
+# exhausted) and shuts everything down cleanly so the last CSV rows
+# and florestad's own log make it to the FAT mailbox.
+. /usr/lib/florestaos/common.sh
+load_config
+
+stamp=$(boot_stamp)
+CSV="/data/bench/$CFG_MODE-$CFG_NETWORK-$stamp.csv"
+DATADIR=/data/floresta
+
+[ -d /data/bench ] || {
+	log "ERROR: /data unavailable, cannot run $CFG_MODE"
+	exit 1
+}
+
+log "$CFG_MODE: wiping $DATADIR for a cold start"
+rm -rf "$DATADIR"
+mkdir -p "$DATADIR"
+
+set -- --network "$CFG_NETWORK" --data-dir "$DATADIR" \
+	--rpc-address 127.0.0.1:8332 --log-to-file
+# bench-ibd measures the honest full IBD; bench-assume measures the
+# assume-utreexo fast path (which is florestad's default behaviour).
+[ "$CFG_MODE" = bench-ibd ] && set -- "$@" --no-assume-utreexo
+[ "$CFG_ASSUME_VALID" != hardcoded ] && set -- "$@" --assume-valid "$CFG_ASSUME_VALID"
+# shellcheck disable=SC2086
+set -- "$@" $CFG_EXTRA_FLAGS
+
+log "starting: florestad $*"
+start=$(cut -d. -f1 /proc/uptime)
+florestad "$@" >>"$DATADIR/console.log" 2>&1 &
+FLORESTAD_PID=$!
+echo $FLORESTAD_PID >"$RUN_DIR/florestad.pid"
+
+sampler "$CSV" &
+SAMPLER_PID=$!
+echo $SAMPLER_PID >"$RUN_DIR/sampler.pid"
+
+budget_s=$((CFG_IBD_TIME_BUDGET_HOURS * 3600))
+
+finish() {
+	reason="$1"
+	log "bench finished: $reason"
+
+	kill -TERM "$FLORESTAD_PID" 2>/dev/null
+	# Give florestad up to two minutes to flush its state cleanly.
+	timeout 120 sh -c "while kill -0 $FLORESTAD_PID 2>/dev/null; do sleep 1; done"
+	# TERM to the sampler triggers its final flush to /boot/results.
+	kill -TERM "$SAMPLER_PID" 2>/dev/null
+	sleep 3
+
+	# Ship florestad's own log next to the CSV — invaluable when a
+	# run stalls and the samples alone don't say why.
+	[ -f "$DATADIR/debug.log" ] &&
+		cp -f "$DATADIR/debug.log" "$RESULTS_DIR/$CFG_MODE-$CFG_NETWORK-$stamp-debug.log"
+	echo "$reason" >"$RESULTS_DIR/$CFG_MODE-$CFG_NETWORK-$stamp-finished.txt"
+	persist_clock
+	sync
+
+	if [ "$CFG_BENCH_END" = poweroff ]; then
+		log "powering off"
+		poweroff
+	else
+		log "bench_end=idle: leaving the system up"
+	fi
+}
+
+while :; do
+	sleep 30
+
+	kill -0 "$FLORESTAD_PID" 2>/dev/null || {
+		finish "florestad exited on its own"
+		exit 0
+	}
+
+	now=$(cut -d. -f1 /proc/uptime)
+	if [ $((now - start)) -ge "$budget_s" ]; then
+		finish "time budget of ${CFG_IBD_TIME_BUDGET_HOURS}h exhausted"
+		exit 0
+	fi
+
+	if [ "$CFG_IBD_STOP_HEIGHT" -gt 0 ]; then
+		height=$(floresta-cli --network "$CFG_NETWORK" --rpc-host "$RPC_HOST" \
+			getblockcount 2>/dev/null | tr -cd '0-9')
+		if [ -n "$height" ] && [ "$height" -ge "$CFG_IBD_STOP_HEIGHT" ]; then
+			finish "reached height $height (target $CFG_IBD_STOP_HEIGHT)"
+			exit 0
+		fi
+	fi
+done

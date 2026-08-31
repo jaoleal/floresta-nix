@@ -1,0 +1,12 @@
+# BusyBox additions over Buildroot's default config.
+#
+# ntpd: the board has no RTC, and block timestamp checks (median time
+# past) misbehave with a 1970 clock — an NTP client is boot-critical
+# the moment the USB network is up.  Client only; nobody asks a Pi
+# Zero for the time.
+CONFIG_NTPD=y
+# CONFIG_FEATURE_NTPD_SERVER is not set
+
+# timeout: used by init scripts to bound the first NTP sync and the
+# florestad shutdown wait.
+CONFIG_TIMEOUT=y

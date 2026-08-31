@@ -1,0 +1,80 @@
+#!/bin/sh
+# florestaos — administrative commands for the bench lab, run over the
+# USB-gadget SSH/serial session.
+. /usr/lib/florestaos/common.sh
+
+usage() {
+	cat <<'EOF'
+usage: florestaos <command>
+
+commands:
+  reflash   Wipe the start of the SD card and reboot into USB boot
+            mode, so the host can re-flash with `nix run .#flash-pi0`
+            WITHOUT removing the card.  DESTROYS everything on the
+            card — copy your results first!
+  help      This text.
+EOF
+}
+
+reflash() {
+	cat <<'EOF'
+This is the software substitute for a recovery button this hardware
+does not have.  It will:
+
+  1. stop florestad and flush pending bench results to the FAT,
+  2. ERASE the beginning of the SD card (partition table + boot),
+  3. reboot — the boot ROM will find nothing bootable and fall back
+     to USB device mode, where the host's `nix run .#flash-pi0` can
+     flash a fresh image over the same cable.
+
+EVERYTHING ON THIS CARD IS DESTROYED, including /data (chain state)
+and any results not yet copied off.  Copy them NOW if you need them:
+    scp -r root@10.7.0.2:/boot/results .
+
+EOF
+	printf "Type 'reflash' to continue: "
+	read -r answer
+	if [ "$answer" != reflash ]; then
+		echo "aborted."
+		exit 1
+	fi
+
+	cd /
+
+	# Clean stop: florestad flushes its state, the sampler makes a
+	# final sync to /boot/results — pointless for *this* card's data,
+	# but it makes "I copied the results, then reflashed" safe even
+	# when the copy happened mid-run.
+	/etc/init.d/S90florestamode stop || true
+	sync
+
+	# /boot must be unmounted before the wipe: the FAT lives inside
+	# the first megabytes, and a mounted filesystem could flush cached
+	# metadata back *over* our zeros afterwards.
+	if ! umount /boot 2>/dev/null; then
+		echo "florestaos: ERROR: could not unmount /boot (is something using it?)" >&2
+		exit 1
+	fi
+	umount /data 2>/dev/null || true
+
+	# 1 MiB of zeros kills the MBR and the start of the FAT: the boot
+	# ROM finds no bootable media and falls back to USB device mode.
+	echo "wiping the start of the card..."
+	dd if=/dev/zero of=/dev/mmcblk0 bs=1M count=1 2>/dev/null
+	sync
+
+	echo "rebooting into USB boot mode — run 'nix run .#flash-pi0' on the host."
+	# -f: nothing left to shut down cleanly, and init's shutdown path
+	# would try (and fail) to touch the filesystems we just pulled.
+	reboot -f
+}
+
+case "${1:-help}" in
+reflash) reflash ;;
+help | --help | -h) usage ;;
+*)
+	echo "florestaos: unknown command '$1'" >&2
+	usage
+	exit 1
+	;;
+esac

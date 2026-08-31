@@ -1,0 +1,94 @@
+#!/bin/sh
+# Storage and memory bring-up.  Runs before everything else that is
+# ours: later scripts rely on /boot being mounted, the parsed config
+# in /run/florestaos, /data being available, and the clock being sane.
+. /usr/lib/florestaos/common.sh
+
+DISK=/dev/mmcblk0
+P3=${DISK}p3
+SYS_P2=/sys/block/mmcblk0/mmcblk0p2
+# Persistent (FAT) marker that survives the first-boot reboot cycle and
+# stops a broken card from reboot-looping forever.
+ATTEMPTS=/boot/florestaos-p3.attempts
+
+ensure_data_partition() {
+	if [ ! -b "$P3" ]; then
+		if ! fdisk -l "$DISK" 2>/dev/null | grep -q "^${P3}"; then
+			# First boot: the flashed image only has boot + rootfs.
+			# Claim everything after the rootfs partition for /data.
+			start=$(($(cat "$SYS_P2/start") + $(cat "$SYS_P2/size")))
+			log "first boot: creating data partition at sector $start"
+			# n=new, p=primary, 3, explicit start, default end (=end
+			# of card), w=write.  The kernel cannot re-read the table
+			# while the root partition is in use, so a reboot follows.
+			printf 'n\np\n3\n%s\n\nw\n' "$start" | fdisk -u "$DISK" >/dev/null 2>&1
+			sync
+		fi
+		# Table now has p3 but the running kernel does not; one clean
+		# reboot fixes that.  Bounded by the attempt counter.
+		attempts=$(cat "$ATTEMPTS" 2>/dev/null || echo 0)
+		if [ "$attempts" -lt 2 ]; then
+			echo $((attempts + 1)) >"$ATTEMPTS"
+			sync
+			log "rebooting to pick up the new partition table"
+			# -f: direct syscall.  Nothing is running yet (we are the
+			# first boot script) and everything is synced; asking init
+			# would only delay the reboot until rcS finishes.
+			reboot -f
+			exit 0
+		fi
+		log "ERROR: data partition never appeared; running without /data"
+		return 1
+	fi
+
+	rm -f "$ATTEMPTS"
+
+	# Newly created partition carries no filesystem yet; a partition
+	# that fails both fsck and mount is treated the same way.  /data
+	# holds only re-downloadable chain state and already-synced CSVs,
+	# so reformatting beats refusing to boot.
+	if ! blkid "$P3" 2>/dev/null | grep -q f2fs; then
+		log "formatting $P3 as f2fs"
+		mkfs.f2fs -f "$P3" >/dev/null 2>&1
+	fi
+	fsck.f2fs -a "$P3" >/dev/null 2>&1
+	if ! mount -t f2fs -o noatime "$P3" /data; then
+		log "mount failed; reformatting $P3"
+		mkfs.f2fs -f "$P3" >/dev/null 2>&1
+		mount -t f2fs -o noatime "$P3" /data || {
+			log "ERROR: /data unusable"
+			return 1
+		}
+	fi
+	mkdir -p /data/floresta /data/bench "$STATE_DIR" /data/dropbear
+}
+
+setup_zram() {
+	[ "$CFG_ZRAM_MB" -gt 0 ] 2>/dev/null || return 0
+	[ -e /sys/block/zram0/disksize ] || {
+		log "zram not available in this kernel"
+		return 0
+	}
+	echo $((CFG_ZRAM_MB * 1024 * 1024)) >/sys/block/zram0/disksize
+	mkswap /dev/zram0 >/dev/null 2>&1 && swapon /dev/zram0 &&
+		log "zram swap: ${CFG_ZRAM_MB}MB"
+}
+
+case "$1" in
+stop)
+	persist_clock
+	;;
+*)
+	# fstab mounts /boot; if init already did `mount -a` this is a
+	# no-op, but never assume — everything below depends on it.
+	mountpoint -q /boot || mount /boot 2>/dev/null
+	mkdir -p "$RESULTS_DIR" 2>/dev/null
+
+	parse_config
+	load_config
+
+	ensure_data_partition || true
+	restore_clock
+	setup_zram
+	;;
+esac

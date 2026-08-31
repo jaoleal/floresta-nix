@@ -1,0 +1,78 @@
+# Kernel config fragment applied on top of the Raspberry Pi bcmrpi
+# defconfig.  Two ideas:
+#
+# 1. No loadable modules.  bcmrpi builds hundreds of =m drivers; with
+#    modules enabled they would all be installed into the squashfs and
+#    triple its size for hardware this board does not have.  Disabling
+#    CONFIG_MODULES drops all of them at once, and everything the board
+#    *does* need is forced =y below — a read-only rootfs also gets
+#    simpler when nothing ever needs to be loaded at runtime.
+# 2. Build in exactly what the bench lab needs: squashfs(zstd) root,
+#    overlayfs for /etc and /var, f2fs for the data partition, zram
+#    swap, and the dwc2 USB gadget stack (ECM + ACM + RNDIS).
+# CONFIG_MODULES is not set
+
+# Root filesystem (squashfs, zstd — matches BR2_TARGET_ROOTFS_SQUASHFS4_ZSTD)
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZSTD=y
+
+# Writable /etc and /var on tmpfs (see /sbin/preinit in the overlay)
+CONFIG_OVERLAY_FS=y
+
+# Data partition.  f2fs is log-structured — friendlier to SD card
+# flash translation layers than ext4's journal, which matters when the
+# workload is an IBD hammering the disk for days.
+CONFIG_F2FS_FS=y
+
+# Boot/"mailbox" partition (FAT32, edited from any OS)
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+
+# zram swap: memory peaks during IBD on 512 MB need headroom, and
+# compressed RAM beats swapping onto the SD card in both speed and
+# card lifetime.
+CONFIG_SWAP=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM=y
+CONFIG_CRYPTO_LZO=y
+
+# USB gadget: dwc2 in peripheral mode + configfs-composed functions.
+# ECM (ethernet, works out of the box on Linux/macOS hosts), ACM
+# (serial console), RNDIS (opt-in ethernet for Windows hosts).
+# All =y — with modules disabled there is nothing to load.
+CONFIG_USB_DWC2=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_LIBCOMPOSITE=y
+CONFIG_CONFIGFS_FS=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_ECM=y
+CONFIG_USB_CONFIGFS_RNDIS=y
+
+# Legacy (pre-configfs) gadget drivers must be OFF, explicitly: bcmrpi
+# has them =m, and with CONFIG_MODULES=n the kconfig resolver promotes
+# leftover =m to =y — a built-in legacy gadget (g_zero was the winner)
+# then claims the UDC at boot, before our configfs composite can, and
+# the board enumerates as a test device instead of a network card.
+# CONFIG_USB_ZERO is not set
+# CONFIG_USB_AUDIO is not set
+# CONFIG_USB_ETH is not set
+# CONFIG_USB_G_NCM is not set
+# CONFIG_USB_GADGETFS is not set
+# CONFIG_USB_FUNCTIONFS is not set
+# CONFIG_USB_MASS_STORAGE is not set
+# CONFIG_USB_G_SERIAL is not set
+# CONFIG_USB_MIDI_GADGET is not set
+# CONFIG_USB_G_PRINTER is not set
+# CONFIG_USB_CDC_COMPOSITE is not set
+# CONFIG_USB_G_ACM_MS is not set
+# CONFIG_USB_G_MULTI is not set
+# CONFIG_USB_G_HID is not set
+# CONFIG_USB_G_DBGP is not set
+# CONFIG_USB_G_WEBCAM is not set
+# CONFIG_USB_RAW_GADGET is not set
+
+# florestad may open v6 sockets; bcmrpi has IPv6 as a module, which
+# CONFIG_MODULES=n would silently drop — force it in.
+CONFIG_IPV6=y

@@ -1,0 +1,108 @@
+#!/bin/sh
+# sampler <csv-path> — the bottleneck instrument of the bench lab.
+#
+# Appends one CSV row every CFG_SAMPLE_INTERVAL_SECS with everything
+# needed to see *why* IBD is slow on this board: chain height,
+# florestad RSS/CPU, SoC temperature (thermal throttling shows up
+# here), zram/swap pressure, cumulative SD I/O counters and load.
+#
+# Counters from /proc/diskstats are cumulative since boot on purpose:
+# post-processing computes deltas, and cumulative values survive a
+# missed sample without corrupting rates.
+#
+# The CSV lives on /data and is copied to the FAT mailbox
+# (/boot/results) every CFG_RESULTS_SYNC_EVERY rows and on shutdown,
+# so yanking the power costs at most a few samples.
+#
+# Columns (keep in sync with pi0/README.md!):
+#   ts_utc          ISO8601 UTC
+#   uptime_s        seconds since boot (integer)
+#   height          chain height from floresta-cli, -1 if unavailable
+#   rss_kb          florestad resident set, kB (-1 if not running)
+#   cpu_pct         florestad CPU% over the last interval (single core)
+#   temp_mc         SoC temperature, millidegrees C
+#   load1/5/15      load averages
+#   mem_avail_kb    MemAvailable
+#   swap_total_kb / swap_free_kb
+#   zram_orig_b / zram_compr_b   bytes stored in zram before/after
+#                                compression (0 when zram is off)
+#   sd_reads / sd_read_sectors / sd_writes / sd_write_sectors / sd_io_ms
+#                   cumulative mmcblk0 counters (sectors are 512 B)
+
+. /usr/lib/florestaos/common.sh
+load_config
+
+CSV="$1"
+[ -n "$CSV" ] || {
+	echo "usage: sampler <csv-path>" >&2
+	exit 1
+}
+
+HEADER='ts_utc,uptime_s,height,rss_kb,cpu_pct,temp_mc,load1,load5,load15,mem_avail_kb,swap_total_kb,swap_free_kb,zram_orig_b,zram_compr_b,sd_reads,sd_read_sectors,sd_writes,sd_write_sectors,sd_io_ms'
+
+mkdir -p "$(dirname "$CSV")"
+[ -s "$CSV" ] || echo "$HEADER" >"$CSV"
+
+flush() {
+	sync_to_results "$CSV"
+	persist_clock
+}
+trap 'flush; exit 0' TERM INT
+
+prev_jiffies=""
+prev_uptime=""
+rows=0
+
+while :; do
+	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	uptime_s=$(cut -d. -f1 /proc/uptime)
+
+	height=$(floresta-cli --network "$CFG_NETWORK" --rpc-host "$RPC_HOST" \
+		getblockcount 2>/dev/null | tr -cd '0-9')
+	[ -n "$height" ] || height=-1
+
+	pid=$(pidof florestad | awk '{print $1}')
+	rss_kb=-1
+	cpu_pct=-1
+	if [ -n "$pid" ] && [ -r "/proc/$pid/stat" ]; then
+		rss_kb=$(awk '/^VmRSS:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+		[ -n "$rss_kb" ] || rss_kb=-1
+		# utime+stime in USER_HZ (100/s); delta over wall time = CPU%.
+		jiffies=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null)
+		if [ -n "$jiffies" ] && [ -n "$prev_jiffies" ] && [ "$uptime_s" -gt "$prev_uptime" ]; then
+			cpu_pct=$(((jiffies - prev_jiffies) / (uptime_s - prev_uptime)))
+		fi
+		prev_jiffies=$jiffies
+		prev_uptime=$uptime_s
+	else
+		prev_jiffies=""
+	fi
+
+	temp_mc=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+	[ -n "$temp_mc" ] || temp_mc=-1
+
+	set -- $(cat /proc/loadavg)
+	load1=$1 load5=$2 load15=$3
+
+	mem_avail_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+	swap_total_kb=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)
+	swap_free_kb=$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)
+
+	# mm_stat: orig_data_size compr_data_size ... (bytes)
+	if [ -r /sys/block/zram0/mm_stat ]; then
+		set -- $(cat /sys/block/zram0/mm_stat)
+		zram_orig_b=$1 zram_compr_b=$2
+	else
+		zram_orig_b=0 zram_compr_b=0
+	fi
+
+	disk=$(awk '$3 == "mmcblk0" {print $4 "," $6 "," $8 "," $10 "," $13; exit}' /proc/diskstats)
+	[ -n "$disk" ] || disk="0,0,0,0,0"
+
+	echo "$ts,$uptime_s,$height,$rss_kb,$cpu_pct,$temp_mc,$load1,$load5,$load15,$mem_avail_kb,$swap_total_kb,$swap_free_kb,$zram_orig_b,$zram_compr_b,$disk" >>"$CSV"
+
+	rows=$((rows + 1))
+	[ $((rows % CFG_RESULTS_SYNC_EVERY)) -eq 0 ] && flush
+
+	sleep "$CFG_SAMPLE_INTERVAL_SECS"
+done

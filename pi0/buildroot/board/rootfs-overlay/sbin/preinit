@@ -1,0 +1,34 @@
+#!/bin/sh
+# First userspace code to run (cmdline: init=/sbin/preinit).
+#
+# The rootfs is a read-only squashfs — power loss can never corrupt
+# the OS.  But parts of the system insist on writing to /etc (dropbear,
+# resolv.conf) and /var (logs, pids), so both get a tmpfs-backed
+# overlayfs before real init starts: reads fall through to the
+# squashfs, writes land in RAM and evaporate on reboot.  Anything that
+# must survive a reboot lives on /data or /boot instead — that is the
+# whole persistence model of this box.
+
+# Kernel usually mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT); the
+# rest is on us.  Failures here must not stop boot: a degraded system
+# that reaches a serial console beats a kernel panic.
+mount -t proc -o nodev,noexec,nosuid proc /proc 2>/dev/null
+mount -t sysfs -o nodev,noexec,nosuid sysfs /sys 2>/dev/null
+grep -q ' /dev devtmpfs ' /proc/mounts || mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run 2>/dev/null
+
+overlay_mount() {
+	# $1: directory to make writable (lowerdir stays on squashfs)
+	dir="$1"
+	name="$(basename "$dir")"
+	mkdir -p "/run/overlay/$name-upper" "/run/overlay/$name-work"
+	mount -t overlay \
+		-o "lowerdir=$dir,upperdir=/run/overlay/$name-upper,workdir=/run/overlay/$name-work" \
+		overlay "$dir" 2>/dev/null ||
+		echo "preinit: WARNING: overlay on $dir failed, staying read-only" >&2
+}
+
+overlay_mount /etc
+overlay_mount /var
+
+exec /sbin/init

@@ -1,0 +1,25 @@
+# BusyBox inittab — Floresta Pi Zero bench lab.
+# /proc, /sys, /dev, /run and the /etc + /var overlays were already
+# mounted by /sbin/preinit before init started.
+
+::sysinit:/bin/mount -a
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/etc/init.d/rcS
+
+# Consoles: hardware UART (always), HDMI (if anything is plugged in),
+# and the USB gadget serial port.  ttyGS0 only exists after
+# S30usbgadget builds the composite gadget, so a wrapper waits for the
+# device — and its inittab id field MUST stay empty: init opens the id
+# device itself before spawning, so a ttyGS0 id makes init error-spam
+# "can't open /dev/ttyGS0" without ever running the wrapper.
+ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
+tty1::respawn:/sbin/getty -L tty1 0 vt100
+::respawn:/usr/sbin/getty-wait ttyGS0
+
+::ctrlaltdel:/sbin/reboot
+
+# Clean shutdown: stop services (rcK runs the S* scripts with `stop`,
+# which flushes bench results to the FAT), then swap off and unmount.
+::shutdown:/etc/init.d/rcK
+::shutdown:/sbin/swapoff -a
+::shutdown:/bin/umount -a -r

@@ -1,0 +1,104 @@
+# Floresta bench lab — Raspberry Pi Zero v1.3 (BCM2835, ARM1176JZF-S).
+#
+# Derived from Buildroot's raspberrypi0_defconfig, reshaped for an
+# immutable benchmark appliance: squashfs rootfs, FAT "mailbox" boot
+# partition, f2fs data partition created on first boot.
+#
+# Read together with pi0/README.md.  Every deviation from the upstream
+# defconfig is commented.
+
+BR2_arm=y
+BR2_arm1176jzf_s=y
+
+# musl instead of the default uClibc: the florestad binary injected by
+# Nix is a *static* musl build, so nothing on the target links against
+# the rootfs libc — but musl is small, modern, and the same libc family
+# the Rust side targets, which keeps the mental model to one libc.
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+
+# Toolchain kernel headers must match the 6.6-series Raspberry Pi
+# kernel pinned below (same pin as upstream raspberrypi0_defconfig).
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_6=y
+
+# No target C++: florestad is static (its C++ parts are linked inside
+# the binary by the Nix cross build), and every Buildroot target
+# package here is plain C.  Skipping g++ shaves the toolchain build.
+
+# Reuse Buildroot's own Raspberry Pi patch/hash directory: it carries
+# the .hash file for the pinned kernel tarball, which
+# BR2_DOWNLOAD_FORCE_CHECK_HASHES below requires.
+BR2_GLOBAL_PATCH_DIR="board/raspberrypi/patches"
+
+# Every download must have a known hash — combined with the Nix
+# fixed-output download derivation this pins the full source closure.
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+
+# Normalize timestamps, paths and build metadata so two builds of the
+# same tree converge on the same image (see README for what remains).
+BR2_REPRODUCIBLE=y
+
+BR2_TARGET_GENERIC_HOSTNAME="floresta-pi0"
+BR2_TARGET_GENERIC_ISSUE="Floresta Pi Zero bench lab"
+# A fixed root password on a lab device that only speaks over a USB
+# cable to its host.  Documented in the README; do not expose this
+# image to a hostile network.
+BR2_TARGET_ENABLE_ROOT_LOGIN=y
+BR2_TARGET_GENERIC_ROOT_PASSWD="floresta"
+# Network is static (USB gadget); no DHCP client wanted.
+
+BR2_SYSTEM_DHCP=""
+
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/rootfs-overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/post-image.sh"
+
+# Kernel: the Raspberry Pi Foundation tree, same commit upstream
+# Buildroot pins for this board (their hash file is reused via
+# BR2_GLOBAL_PATCH_DIR above).
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="$(call github,raspberrypi,linux,576cc10e1ed50a9eacffc7a05c796051d7343ea4)/linux-576cc10e1ed50a9eacffc7a05c796051d7343ea4.tar.gz"
+BR2_LINUX_KERNEL_DEFCONFIG="bcmrpi"
+# The fragment turns off loadable modules and builds squashfs/f2fs/
+# overlayfs/zram/USB-gadget support in.  See linux.fragment for why.
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/linux.fragment"
+BR2_LINUX_KERNEL_DTS_SUPPORT=y
+BR2_LINUX_KERNEL_INTREE_DTS_NAME="broadcom/bcm2708-rpi-zero"
+BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
+
+# BusyBox fragment adds the SNTP client (ntpd) and `timeout`, which the
+# init scripts use; both are off in Buildroot's default BusyBox config.
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/busybox.fragment"
+
+# SSH over the USB network.  Client-side tools are useless on the lab
+# box itself.
+BR2_PACKAGE_DROPBEAR=y
+# BR2_PACKAGE_DROPBEAR_CLIENT is not set
+
+# mkfs.f2fs / fsck.f2fs on the target: the data partition is created
+# and formatted on first boot (the flashed image only carries boot +
+# rootfs, so it flashes fast and adapts to any card size).
+BR2_PACKAGE_F2FS_TOOLS=y
+
+BR2_PACKAGE_RPI_FIRMWARE=y
+BR2_PACKAGE_RPI_FIRMWARE_BOOTCODE_BIN=y
+# Cut-down firmware variant: pairs with gpu_mem=16 in config.txt.  The
+# box is headless — every MB the GPU does not take is a MB florestad
+# gets, and 512 MB is the whole budget.
+BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI_CD=y
+BR2_PACKAGE_RPI_FIRMWARE_CONFIG_FILE="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/config.txt"
+BR2_PACKAGE_RPI_FIRMWARE_CMDLINE_FILE="$(BR2_EXTERNAL_FLORESTA_PI0_PATH)/board/cmdline.txt"
+# dtoverlay=dwc2 in config.txt needs the overlay blobs on the FAT.
+BR2_PACKAGE_RPI_FIRMWARE_INSTALL_DTB_OVERLAYS=y
+
+# Immutable rootfs: squashfs, zstd-compressed.  zstd instead of the
+# smaller xz because decompression happens on a 1 GHz ARM11 — boot and
+# first-touch latency matter more than a few MB of image size.
+BR2_TARGET_ROOTFS_SQUASHFS=y
+BR2_TARGET_ROOTFS_SQUASHFS4_ZSTD=y
+# BR2_TARGET_ROOTFS_TAR is not set
+
+# Host tools genimage needs to assemble the SD card image.
+BR2_PACKAGE_HOST_DOSFSTOOLS=y
+BR2_PACKAGE_HOST_GENIMAGE=y
+BR2_PACKAGE_HOST_MTOOLS=y

@@ -1,0 +1,85 @@
+#!/bin/sh
+# Compose the USB gadget: one cable gives power + ethernet + serial.
+#
+# Functions:
+#   ecm.usb0 / rndis.usb0 — ethernet to the host.  ECM is class-
+#     standard and works out of the box on Linux and macOS; RNDIS is
+#     the Microsoft dialect Windows expects (usb_gadget=rndis).
+#   acm.GS0 — /dev/ttyGS0, a login console that works even when the
+#     host never configures the network side.
+. /usr/lib/florestaos/common.sh
+
+G=/sys/kernel/config/usb_gadget/floresta
+
+case "$1" in
+stop)
+	[ -d "$G" ] && echo "" >"$G/UDC" 2>/dev/null
+	;;
+*)
+	load_config 2>/dev/null || exit 0
+
+	mountpoint -q /sys/kernel/config ||
+		mount -t configfs none /sys/kernel/config || {
+		log "ERROR: configfs unavailable, no USB gadget"
+		exit 0
+	}
+
+	mkdir -p "$G"
+	# Linux Foundation composite-gadget IDs: the stock choice for
+	# configfs gadgets; hosts have quirk entries for them.
+	echo 0x1d6b >"$G/idVendor"
+	echo 0x0104 >"$G/idProduct"
+	mkdir -p "$G/strings/0x409"
+	echo "floresta-pi0" >"$G/strings/0x409/serialnumber"
+	echo "Floresta" >"$G/strings/0x409/manufacturer"
+	echo "Floresta Pi Zero bench lab" >"$G/strings/0x409/product"
+
+	mkdir -p "$G/configs/c.1/strings/0x409"
+	echo "net+serial" >"$G/configs/c.1/strings/0x409/configuration"
+	# The Pi is bus-powered through this very cable; advertise a
+	# modest draw.
+	echo 250 >"$G/configs/c.1/MaxPower"
+
+	if [ "$CFG_USB_GADGET" = rndis ]; then
+		NETFN=rndis.usb0
+	else
+		NETFN=ecm.usb0
+	fi
+	mkdir -p "$G/functions/$NETFN"
+	# Fixed, locally-administered MACs so the host sees the same
+	# interface identity every boot (stable NetworkManager profiles,
+	# stable ARP) — 02:... is the locally-administered bit.
+	echo 02:70:69:30:00:01 >"$G/functions/$NETFN/host_addr"
+	echo 02:70:69:30:00:02 >"$G/functions/$NETFN/dev_addr"
+
+	mkdir -p "$G/functions/acm.GS0"
+
+	ln -sf "$G/functions/$NETFN" "$G/configs/c.1/"
+	ln -sf "$G/functions/acm.GS0" "$G/configs/c.1/"
+
+	if [ "$CFG_USB_GADGET" = rndis ]; then
+		# Windows only picks the RNDIS driver when the gadget
+		# announces itself via Microsoft OS descriptors.
+		echo 1 >"$G/os_desc/use" 2>/dev/null
+		echo 0xcd >"$G/os_desc/b_vendor_code" 2>/dev/null
+		echo MSFT100 >"$G/os_desc/qw_sign" 2>/dev/null
+		echo RNDIS >"$G/functions/$NETFN/os_desc/interface.rndis/compatible_id" 2>/dev/null
+		echo 5162001 >"$G/functions/$NETFN/os_desc/interface.rndis/sub_compatible_id" 2>/dev/null
+		ln -sf "$G/configs/c.1" "$G/os_desc" 2>/dev/null
+	fi
+
+	UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+	if [ -z "$UDC" ]; then
+		log "ERROR: no UDC found — is dtoverlay=dwc2 in config.txt?"
+		exit 0
+	fi
+	echo "$UDC" >"$G/UDC"
+
+	ip addr add "$CFG_USB_IP" dev usb0
+	ip link set usb0 up
+	ip route add default via "$CFG_USB_GATEWAY" 2>/dev/null
+	echo "nameserver $CFG_DNS" >/etc/resolv.conf
+
+	log "usb gadget up: $NETFN, ${CFG_USB_IP} (host: $CFG_USB_GATEWAY)"
+	;;
+esac

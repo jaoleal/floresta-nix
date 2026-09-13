@@ -75,7 +75,11 @@ pkgs.writeShellApplication {
       fi
     fi
     [ -f "$IMAGE" ] || die "image '$IMAGE' does not exist"
-    IMG_BYTES="$(stat -c %s "$IMAGE")"
+    # -L: follow symlinks.  A board may expose its image as a link into
+    # another store path (orange-pi does), and the size here feeds the
+    # readback verification below — getting it wrong would "verify" a
+    # few bytes and pass.
+    IMG_BYTES="$(stat -Lc %s "$IMAGE")"
     say "image: $IMAGE ($((IMG_BYTES / 1024 / 1024)) MiB)"
 
     # dd and the device nodes need root; authenticate once, up front,

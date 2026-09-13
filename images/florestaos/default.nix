@@ -3,9 +3,13 @@
 # florestaos — SCAFFOLD.
 #
 # A generic NixOS whose only job is to run Floresta.  Not a board: the
-# *base* every aarch64-and-up board in this directory re-exports and
-# patches (starting with ../orange-pi-zero-2-W), the way
-# ../rasp-pi-zero is the base for the Buildroot/ARMv6 lineage.
+# intended *base* for the aarch64 lineage.
+#
+# Still empty because the content was written concretely first, in
+# ../orange-pi-zero-2-W/system.nix, whose `lab` module is exactly what
+# belongs here (the florestad service, SSH, zram, no-autostart).  Moving
+# it should wait for a SECOND aarch64 board — extracting a base from one
+# example is guessing at which half is generic.
 #
 # The name is deliberate: the Buildroot image in ../rasp-pi-zero
 # already calls its userspace "florestaos" (see its init scripts and

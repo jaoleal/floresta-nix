@@ -15,11 +15,12 @@ images/
 │
 ├── rasp-pi-zero/          ← complete.  Buildroot/ARMv6, the reference board
 ├── rasp-pi-zero-w/        ← scaffold.  re-exports rasp-pi-zero + WiFi
-├── orange-pi-zero-2-W/    ← scaffold.  re-exports florestaos + H618 boot
+├── orange-pi-zero-2-W/    ← builds.  NixOS/aarch64, H618 boot chain
 └── florestaos/            ← scaffold.  generic NixOS base for aarch64+
 ```
 
-> **Status:** only `rasp-pi-zero` is implemented. The other three
+> **Status:** `rasp-pi-zero` is complete and booted; `orange-pi-zero-2-W`
+> builds but has not been booted yet. The other two
 > directories are scaffolds: the shape is committed, the content is not
 > written. Their `.nix` files `throw` if imported, and
 > `images/default.nix` deliberately exports nothing for them.
@@ -216,12 +217,27 @@ read past them.
 
 | | ARMv6 / Buildroot | aarch64 / NixOS |
 |---|---|---|
-| base | `rasp-pi-zero` | `florestaos` |
-| boards | `rasp-pi-zero-w` | `orange-pi-zero-2-W` |
+| reference board | `rasp-pi-zero` | `orange-pi-zero-2-W` |
+| planned base | — | `florestaos` |
+| derived | `rasp-pi-zero-w` | — |
 | why | `armv6l` has no nixpkgs binary cache — NixOS would mean building the world | `aarch64-linux` is cached, so there is no excuse for a hand-rolled rootfs |
 
-Boards are **additive**. A derived board re-exports its base and
-overrides only its delta — no second Buildroot tree, no second
+**`florestaos` does not exist yet, on purpose.** The aarch64 lineage was
+built concretely first, in `orange-pi-zero-2-W`, rather than designed
+into a base up front. Its `system.nix` is already split into two modules
+for that extraction:
+
+* `lab` — the florestad service, SSH, zram, no-autostart. Board-agnostic;
+  this is what moves to `florestaos`.
+* `board` — U-Boot for the H618, its device tree, the SD image layout.
+  Stays with the board forever.
+
+`system-test.nix` already boots `lab` on its own, which is the test that
+the split is real. A second aarch64 board is what should trigger the
+move — extracting a base from one example is guessing.
+
+Boards are **additive** where a base exists. A derived board re-exports
+its base and overrides only its delta — no second Buildroot tree, no second
 defconfig, no copied overlay. If a change is not specific to the derived
 board, it belongs in the base.
 

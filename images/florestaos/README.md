@@ -4,11 +4,19 @@
 > not written yet. Nothing here is exported by the flake — see
 > `../README.md` for the contract this has to fill.
 
-Not a board. This is the **base image** for every board in this
-directory that can afford NixOS — currently
-[`../orange-pi-zero-2-W`](../orange-pi-zero-2-W) — exactly as
-[`../rasp-pi-zero`](../rasp-pi-zero) is the base for the
-Buildroot/ARMv6 lineage.
+Not a board. This is where the **base image** for the NixOS lineage will
+live — but it is empty on purpose, and the content that belongs here
+already exists somewhere else.
+
+[`../orange-pi-zero-2-W/system.nix`](../orange-pi-zero-2-W/system.nix) was
+written concretely first, and is already split into a `lab` module (the
+florestad service, SSH, zram, no-autostart — board-agnostic) and a
+`board` module (U-Boot, device tree, SD image layout — H618-specific).
+`lab` is what moves here. That board's `system-test.nix` already boots
+`lab` on its own, which is the test that the split is real.
+
+What should trigger the move is a **second** aarch64 board: extracting a
+base from a single example is guessing at which half is generic.
 
 Two lineages, one reason: `armv6l` has no nixpkgs binary cache, so a
 NixOS for the Pi Zero means building the world. `aarch64-linux` does, so

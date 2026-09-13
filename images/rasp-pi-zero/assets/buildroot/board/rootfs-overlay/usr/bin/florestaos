@@ -1,0 +1,118 @@
+#!/bin/sh
+# florestaos — administrative commands for the bench lab, run over the
+# USB-gadget SSH/serial session.
+. /usr/lib/florestaos/common.sh
+
+usage() {
+	cat <<'EOF'
+usage: florestaos <command>
+
+commands:
+  update-florestad   Read a new florestad binary from stdin, verify it
+                     actually runs, and install it to /data/bin (which
+                     outranks the baked-in copy).  Usage from the host:
+                       cat florestad | ssh root@10.7.0.2 'florestaos update-florestad'
+  use-baked          Remove /data/bin/florestad, returning to the
+                     binary baked into the image.
+  reflash            Wipe the start of the SD card and reboot into USB
+                     boot mode, so the host can re-flash with
+                     `nix run .#flash-rasp-pi-zero` WITHOUT removing the card.
+                     DESTROYS everything on the card — copy your
+                     results first!
+  help               This text.
+EOF
+}
+
+update_florestad() {
+	[ -d /data ] || {
+		echo "florestaos: ERROR: /data unavailable" >&2
+		exit 1
+	}
+	mkdir -p /data/bin
+	tmp=/data/bin/.florestad.incoming
+	cat >"$tmp"
+
+	# The only verification that cannot lie: run it.  Catches
+	# truncated transfers, wrong-arch and dynamic-linking mistakes in
+	# one stroke (all of which have bitten this lab already).
+	chmod +x "$tmp"
+	if ! "$tmp" --version; then
+		rm -f "$tmp"
+		echo "florestaos: ERROR: incoming binary does not run; NOT installed" >&2
+		echo "florestaos: (compare md5sum on both ends — pipes can corrupt)" >&2
+		exit 1
+	fi
+	md5sum "$tmp"
+	mv "$tmp" /data/bin/florestad
+	sync
+	echo "florestaos: installed to /data/bin/florestad (restart services or reboot to use)"
+}
+
+reflash() {
+	cat <<'EOF'
+This is the software substitute for a recovery button this hardware
+does not have.  It will:
+
+  1. stop florestad and flush pending bench results to the FAT,
+  2. ERASE the beginning of the SD card (partition table + boot),
+  3. reboot — the boot ROM will find nothing bootable and fall back
+     to USB device mode, where the host's `nix run .#flash-rasp-pi-zero` can
+     flash a fresh image over the same cable.
+
+EVERYTHING ON THIS CARD IS DESTROYED, including /data (chain state)
+and any results not yet copied off.  Copy them NOW if you need them:
+    scp -r root@10.7.0.2:/boot/results .
+
+EOF
+	printf "Type 'reflash' to continue: "
+	read -r answer
+	if [ "$answer" != reflash ]; then
+		echo "aborted."
+		exit 1
+	fi
+
+	cd /
+
+	# Clean stop: florestad flushes its state, the sampler makes a
+	# final sync to /boot/results — pointless for *this* card's data,
+	# but it makes "I copied the results, then reflashed" safe even
+	# when the copy happened mid-run.
+	/etc/init.d/S90florestamode stop || true
+	sync
+
+	# /boot must be unmounted before the wipe: the FAT lives inside
+	# the first megabytes, and a mounted filesystem could flush cached
+	# metadata back *over* our zeros afterwards.
+	if ! umount /boot 2>/dev/null; then
+		echo "florestaos: ERROR: could not unmount /boot (is something using it?)" >&2
+		exit 1
+	fi
+	umount /data 2>/dev/null || true
+
+	# 1 MiB of zeros kills the MBR and the start of the FAT: the boot
+	# ROM finds no bootable media and falls back to USB device mode.
+	echo "wiping the start of the card..."
+	dd if=/dev/zero of=/dev/mmcblk0 bs=1M count=1 2>/dev/null
+	sync
+
+	echo "rebooting into USB boot mode — run 'nix run .#flash-rasp-pi-zero' on the host."
+	# -f: nothing left to shut down cleanly, and init's shutdown path
+	# would try (and fail) to touch the filesystems we just pulled.
+	reboot -f
+}
+
+case "${1:-help}" in
+update-florestad) update_florestad ;;
+use-baked)
+	rm -f /data/bin/florestad
+	sync
+	echo "florestaos: /data/bin/florestad removed; baked-in binary active"
+	;;
+reflash) reflash ;;
+help | --help | -h) usage ;;
+*)
+	echo "florestaos: unknown command '$1'" >&2
+	usage
+	exit 1
+	;;
+esac

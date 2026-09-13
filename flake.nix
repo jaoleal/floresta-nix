@@ -40,6 +40,13 @@
         let
           inherit (pkgs) lib;
 
+          # The ONE nixfmt this tree is formatted with: pkgs.nixfmt is the
+          # RFC 166 style (1.x).  pkgs.nixfmt-classic is 0.6 and formats
+          # DIFFERENTLY — `formatter` used to point at it, which silently
+          # made `nix fmt` fight `nix flake check`.  The hook below pins
+          # this exact package, and `formatter` wraps the same one.
+          inherit (pkgs) nixfmt;
+
           # Upstream Floresta source — pinned via flake input, shared by
           # default builds, master builds, and Android cross-compilation.
           # Update with: nix flake update floresta-master
@@ -90,17 +97,13 @@
               ;
           };
 
-          # Raspberry Pi Zero bench lab: Buildroot-built SD image with
-          # Nix-cross-compiled florestad.  x86_64-linux only — Buildroot
-          # needs a Linux build host.  See pi0/README.md.
-          pi0 = lib.optionalAttrs (system == "x86_64-linux") (
-            import ./pi0/nix { inherit pkgs inputs system; }
-          );
-
-          # Host-side automated flasher (rpiboot USB boot): all systems —
-          # the user's host may well be a Mac even though the image build
-          # is Linux-only.
-          flashPi0 = import ./pi0/nix/flash.nix { inherit pkgs; };
+          # ./images is the SINGLE gate for everything SBC-related: board
+          # images and their component builds, the shared flasher / QEMU
+          # runner, and the bench-node harness.  Nothing else in this
+          # flake reaches under images/.  Boards gate themselves per
+          # system (the Pi Zero image is x86_64-linux only; its flasher
+          # is not).  See images/README.md.
+          images = import ./images { inherit pkgs inputs system; };
 
           # Release attestation — see lib/attestation.nix.
           attestation = import ./lib/attestation.nix {
@@ -125,17 +128,19 @@
                   ./lib/floresta-service.nix
                   ./lib/floresta-service-eval-test.nix
                   ./lib/floresta-service-vm-test.nix
-                  ./pi0/nix/default.nix
-                  ./pi0/nix/flash.nix
-                  ./pi0/nix/qemu-boot-test.nix
-                  ./pi0/nix/rust-armv6.nix
-                  ./pi0/nix/sd-image.nix
+                  # Every .nix under ./images: a new board is a new
+                  # directory of files, so enumerate by extension rather
+                  # than maintaining a list here by hand.
+                  (pkgs.lib.fileset.fileFilter (file: file.hasExt "nix") ./images)
                   ./flake.nix
                   ./flake.lock
                 ];
               };
               hooks = {
-                nixfmt.enable = true;
+                nixfmt = {
+                  enable = true;
+                  package = nixfmt;
+                };
                 deadnix.enable = true;
                 nil.enable = true;
                 statix.enable = true;
@@ -157,9 +162,9 @@
               flakeInputs = inputs;
             };
           }
-          # pi0-boot-test: QEMU boot validation of the SD image
-          # (x86_64-linux, where the image exists).
-          // (pi0.checks or { });
+          # Per-board acceptance tests, where the board can be built on
+          # this system (boot-test-rasp-pi-zero and friends: x86_64-linux).
+          // images.checks;
 
           packages =
             releases
@@ -167,21 +172,24 @@
             // lib.mapAttrs' (
               version: lib.nameValuePair "attestation-manifest-${version}"
             ) attestation.manifests
-            # pi0-sd-image and friends, where they exist (x86_64-linux).
-            // (pi0.packages or { })
-            // {
-              flash-pi0 = flashPi0;
-            };
+            # Everything ./images exports on this system: board images,
+            # their component builds, and the host-side tooling.
+            // images.packages;
 
-          # The attestation verbs, and the pi0 flasher.
+          # The attestation verbs, plus every board's runnable tooling
+          # (flash-*, qemu-test-*) — see images/default.nix.
           apps = {
             verify.program = attestation.verify;
             attest.program = attestation.attest;
             releases.program = attestation.listReleases;
-            flash-pi0.program = flashPi0;
-          };
+          }
+          // lib.mapAttrs (_name: program: { inherit program; }) images.apps;
 
-          formatter = pkgs.nixfmt-classic;
+          # `nix fmt` with no arguments has to format the whole tree, which
+          # bare nixfmt cannot do (it reads stdin).  nixfmt-tree is the
+          # treefmt wrapper around pkgs.nixfmt — same binary, same style
+          # as the hook above.
+          formatter = pkgs.nixfmt-tree;
 
           devShells = {
             default = pkgs.mkShell {
@@ -195,7 +203,7 @@
               ];
             };
           }
-          // lib.optionalAttrs (pi0 ? devShell) { pi0 = pi0.devShell; };
+          // images.devShells;
         };
     };
 
